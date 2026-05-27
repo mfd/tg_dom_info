@@ -41,9 +41,8 @@ dp = Dispatcher()
 
 
 def get_house_data(address: str) -> str:
-    """Главный агрегатор данных с умным приоритетом: Dadata -> МинЖКХ + Верификация 2ГИС"""
+    """Dadata → МинЖКХ (год постройки, материал стен)."""
     try:
-        # Шаг 1. Распознавание и стандартизация через Dadata
         correct_address, details = get_dadata_address(address)
         
         if not details:
@@ -56,7 +55,7 @@ def get_house_data(address: str) -> str:
         postal_code = details.get("postal_code") or ""
         house_type = details.get("house_type_full", "дом").lower()
         
-        cadastre = details.get("cadnum") or "Не указан"
+        cadastre = details.get("house_cadnum") or details.get("cadnum") or "Не указан"
         build_year = None
         wall_material = None
         mingkh_url = None
@@ -66,39 +65,10 @@ def get_house_data(address: str) -> str:
         target_house = details.get("house")
         target_block = details.get("block")
         
-        if target_block and "/" not in target_house:
-            target_house = f"{target_house}/{target_block.strip()}"
-            
-        lat = details.get("geo_lat")
-        lon = details.get("geo_lon")
-        
-        # Шаг 2. Первичный запрос к текстовой базе МинЖКХ
         if target_city and target_street and target_house:
-            m_cadastre, m_year, m_url = get_house_details_from_mingkh(target_city, target_street, target_house)
-            if m_year:
-                build_year = m_year
-            if m_cadastre and m_cadastre != "не заполнен":
-                cadastre = m_cadastre
-            if m_url:
-                mingkh_url = m_url
-
-        # Шаг 3. ВЕРИФИКАЦИЯ ЧЕРЕЗ 2ГИС (Абсолютный приоритет на актуальный год по гео-точке)
-        tg_year, tg_material = get_house_details_from_2gis(lat, lon, target_house)
-        if tg_year:
-            # Если 2ГИС нашел данные, перезаписываем год (стираем архивный/ошибочный с МинЖКХ)
-            build_year = f"{tg_year} г. (данные 2ГИС)"
-            if tg_material:
-                wall_material = tg_material
-
-        # Шаг 4. Ультимативный резерв по ФИАС (включается только если год по-прежнему пуст)
-        if not build_year or build_year == "Нет данных":
-            f_cadastre, f_year, f_url = get_house_details_by_fias_fallback(fias_id, target_city, target_street, target_house)
-            if f_year:
-                build_year = f"{f_year} г. (Реформа ЖКХ)"
-            if f_cadastre and f_cadastre != "не заполнен":
-                cadastre = f_cadastre
-            if f_url:
-                mingkh_url = f_url
+            build_year, wall_material, mingkh_url = get_year_from_mingkh_smart(
+                cadastre, target_city, target_street, target_house, target_block
+            )
 
         if not build_year:
             build_year = "Нет данных"
@@ -135,7 +105,7 @@ def get_house_data(address: str) -> str:
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
-    await message.answer("Привет! Отправь мне адрес дома, и я найду его параметры в базах ФИАС, МинЖКХ и 2ГИС.")
+    await message.answer("Привет! Отправь мне адрес дома, и я найду год постройки и параметры в базах Dadata и МинЖКХ.")
 
 
 @dp.message(F.text)
