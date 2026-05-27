@@ -1,18 +1,22 @@
-import os
 import re
 from typing import Optional, Tuple
 import requests
 from bs4 import BeautifulSoup
-from dotenv import load_dotenv
 import urllib3
+
+from mingkh_parse_dict import (
+    YEAR_DT_LABELS_ORDER,
+    YEAR_PAGE_TEXT_RE,
+    YEAR_VALUE_RE,
+    normalize_label,
+)
+from settings import DADATA_API, DADATA_SECRET
 
 # Отключаем предупреждения об отключенном SSL для корректной работы с гос. сайтами
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
-load_dotenv()
-
-DADATA_API_KEY = os.getenv("DADATA_API")
-DADATA_SECRET_KEY = os.getenv("DADATA_SECRET")
+DADATA_API_KEY = DADATA_API
+DADATA_SECRET_KEY = DADATA_SECRET
 
 def get_dadata_address(query_text: str):
     """Шаг 1: Стандартизация адреса через Dadata Clean API."""
@@ -72,21 +76,29 @@ def _row_matches_house(row_text: str, house_num: str, block_num: Optional[str]) 
     return not re.match(r'\s*(?:/|корпус|к\s*\d)', rest)
 
 
-def get_year_from_mingkh_smart(cadastral_number: str, city: str, street: str, house: str, block: Optional[str] = None):
+def get_year_from_mingkh_smart(
+    cadastral_number: str,
+    city: str,
+    street: str,
+    house: str,
+    block: Optional[str] = None,
+    settlement: Optional[str] = None,
+):
     """Шаг 2: Умный поиск на МинЖКХ со строгой фильтрацией по дому и корпусу."""
     session = requests.Session()
     session.headers.update({"User-Agent": "Mozilla/5.0", "Referer": "https://dom.mingkh.ru/"})
 
     house_num, block_num = _normalize_house_and_block(house, block)
+    place = (city or settlement or "").strip()
 
     # Поиск по тексту с фильтрацией строк
-    if city and street and house_num:
+    if place and street and house_num:
         street_words = street.lower().split()
         ignored = ["степана", "ул", "улица", "проспект", "пр", "академика", "генерала", "летчика", "маршала"]
         filtered = [w for w in street_words if w not in ignored]
         core_street = filtered[0] if filtered else street
 
-        query_parts = [city.lower(), core_street, house_num]
+        query_parts = [place.lower(), core_street, house_num]
         if block_num:
             query_parts.extend(["корпус", block_num])
         query_str = " ".join(query_parts)
@@ -107,19 +119,45 @@ def get_year_from_mingkh_smart(cadastral_number: str, city: str, street: str, ho
         except Exception: pass
     return None, None, None
 
+def _extract_year_from_soup(soup: BeautifulSoup) -> Optional[str]:
+    """Год постройки или ввода в эксплуатацию из карточки дома (см. mingkh_parse_dict)."""
+    years_by_label: dict[str, str] = {}
+    for dl in soup.find_all("dl", class_=lambda c: c and "dl-horizontal" in c):
+        for dt in dl.find_all("dt"):
+            label = normalize_label(dt.get_text())
+            if label not in YEAR_DT_LABELS_ORDER:
+                continue
+            dd = dt.find_next_sibling("dd")
+            if not dd:
+                continue
+            match = YEAR_VALUE_RE.search(dd.get_text(strip=True))
+            if match:
+                years_by_label[label] = match.group(0)
+    for label in YEAR_DT_LABELS_ORDER:
+        if label in years_by_label:
+            return years_by_label[label]
+    page_match = YEAR_PAGE_TEXT_RE.search(soup.get_text())
+    return page_match.group(1) if page_match else None
+
+
 def _parse_mingkh_html(session, url):
     """Парсинг карточки дома."""
     try:
         res = session.get(url, timeout=5, verify=False)
-        soup = BeautifulSoup(res.text, 'html.parser')
-        page_text = soup.get_text()
-        
-        year_match = re.search(r'Год постройки\s*[:\s]*(\d{4})', page_text, re.IGNORECASE)
-        build_year = year_match.group(1) if year_match else None
-        
+        if "не робот" in res.text:
+            return None, None, None
+        soup = BeautifulSoup(res.text, "html.parser")
+        build_year = _extract_year_from_soup(soup)
+
         wall_material = None
-        for dl in soup.find_all('dl', class_='dl-horizontal'):
-            for dt, dd in zip(dl.find_all('dt'), dl.find_all('dd')):
-                if "стены" in dt.text.lower(): wall_material = dd.text.strip().capitalize()
+        for dl in soup.find_all("dl", class_=lambda c: c and "dl-horizontal" in c):
+            for dt in dl.find_all("dt"):
+                if "стены" not in dt.get_text(strip=True).lower():
+                    continue
+                dd = dt.find_next_sibling("dd")
+                if dd:
+                    wall_material = dd.get_text(strip=True).capitalize()
+                    break
         return build_year, wall_material, url
-    except Exception: return None, None, None
+    except Exception:
+        return None, None, None

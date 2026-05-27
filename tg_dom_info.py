@@ -5,12 +5,8 @@ from logging.handlers import TimedRotatingFileHandler
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
 from aiogram.filters import CommandStart
-from dotenv import load_dotenv
-
-# Загружаем окружение из .env
-load_dotenv()
-
 from parser_utils import get_dadata_address, get_year_from_mingkh_smart
+from settings import require_bot_token
 
 # --- НАСТРОЙКА КРУГЛОСУТОЧНОГО ЛОГИРОВАНИЯ ---
 if not os.path.exists("logs"):
@@ -32,11 +28,7 @@ console_handler.setFormatter(logging.Formatter(log_format, datefmt="%Y-%m-%d %H:
 logger.addHandler(console_handler)
 
 # --- ИНИЦИАЛИЗАЦИЯ КЛИЕНТА TG ---
-TELEGRAM_BOT_TOKEN = os.getenv("BOT_TOKEN")
-if not TELEGRAM_BOT_TOKEN:
-    raise ValueError("Критическая ошибка: Переменная BOT_TOKEN не найдена в файле .env!")
-
-bot = Bot(token=TELEGRAM_BOT_TOKEN)
+bot = Bot(token=require_bot_token())
 dp = Dispatcher()
 
 
@@ -67,7 +59,12 @@ def get_house_data(address: str) -> str:
         
         if target_city and target_street and target_house:
             build_year, wall_material, mingkh_url = get_year_from_mingkh_smart(
-                cadastre, target_city, target_street, target_house, target_block
+                cadastre,
+                details.get("city"),
+                target_street,
+                target_house,
+                target_block,
+                settlement=details.get("settlement"),
             )
 
         if not build_year:
