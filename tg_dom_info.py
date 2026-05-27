@@ -19,7 +19,7 @@ bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 
 def get_house_data_mingkh(address: str) -> str:
-    """Функция ищет дом на МинЖКХ и вытаскивает характеристики"""
+    """Функция ищет дом на МинЖКХ и вытаскивает характеристики из таблицы результатов"""
     search_url = "https://mingkh.ru/search/"
     params = {"address": address, "searchtype": "house"}
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
@@ -32,14 +32,23 @@ def get_house_data_mingkh(address: str) -> str:
             
         soup = BeautifulSoup(response.text, 'html.parser')
         
-        # Находим таблицу результатов
+        # Ищем таблицу результатов поиска
         table = soup.find('table', class_='table')
         if not table:
             return "❌ Дом по такому адресу не найден. Попробуйте ввести точнее (Город, улица, дом)."
             
-        first_row = table.find('tbody').find('tr')
-        link = first_row.find('a')['href']
-        house_url = f"https://mingkh.ru{link}"
+        # Находим ВСЕ ссылки внутри таблицы, которые ведут на профиль дома (они содержат /houses/)
+        house_link_element = None
+        for a_tag in table.find_all('a', href=True):
+            if "/houses/" in a_tag['href']:
+                house_link_element = a_tag
+                break # Нам нужен самый первый точный результат
+                
+        if not house_link_element:
+            return "❌ Адрес найден в таблице, но не удалось извлечь ссылку на паспорт дома."
+            
+        # Формируем прямую ссылку на страницу дома
+        house_url = f"https://mingkh.ru{house_link_element['href']}"
         
         # 2. Переход на страницу конкретного дома
         house_res = requests.get(house_url, headers=headers, timeout=10)
@@ -48,7 +57,7 @@ def get_house_data_mingkh(address: str) -> str:
         cadastre = "Не указан"
         build_year = "Нет данных"
         
-        # Разбираем технические характеристики
+        # Разбираем технические характеристики на странице самого дома
         dl_list = house_soup.find_all('dl', class_='dl-horizontal')
         for dl in dl_list:
             dt_elements = dl.find_all('dt')
@@ -61,8 +70,12 @@ def get_house_data_mingkh(address: str) -> str:
                 elif "год постройки" in text_label or "ввода в эксплуатацию" in text_label:
                     build_year = dd.text.strip()
         
+        # Забираем точный красивый адрес, который определил сам сайт
+        correct_address = house_link_element.text.strip()
+        
         return (
-            f"🏠 **Дом найден!**\n\n"
+            f"🏢 **Дом успешно найден!**\n"
+            f"📍 `{correct_address}`\n\n"
             f"🔢 **Кадастровый номер:** `{cadastre}`\n"
             f"📅 **Год постройки:** `{build_year}`\n\n"
             f"🔗 [Ссылка на паспорт дома]({house_url})"
@@ -70,7 +83,6 @@ def get_house_data_mingkh(address: str) -> str:
 
     except Exception as e:
         return f"⚠️ Ошибка при обработке запроса: {e}"
-
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     await message.answer(
