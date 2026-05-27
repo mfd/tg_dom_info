@@ -120,6 +120,13 @@ def get_year_from_mingkh_smart(
     return None, None, None
 
 
+def _enrich_from_domclick(info: dict, dc_fields: dict[str, str]) -> None:
+    """Дополняет info полями Domclick, не перезаписывая уже заполненные."""
+    for key, value in dc_fields.items():
+        if value and not info.get(key):
+            info[key] = value
+
+
 def get_building_info(
     cadastral_number: str,
     city: Optional[str],
@@ -129,10 +136,8 @@ def get_building_info(
     settlement: Optional[str] = None,
     city_district: Optional[str] = None,
 ) -> Tuple[dict, Optional[str], Optional[str]]:
-    """МинЖКХ + дополнение с Domclick. Возвращает (поля, url_минжкх, url_domclick)."""
+    """МинЖКХ, затем всегда Domclick (дополнение). Возвращает (поля, url_минжкх, url_domclick)."""
     info: dict = {}
-    mingkh_url = None
-    domclick_url = None
 
     year, material, mingkh_url = get_year_from_mingkh_smart(
         cadastral_number, city, street, house, block, settlement
@@ -151,22 +156,9 @@ def get_building_info(
         settlement,
         city_district,
     )
-    for key, value in dc_fields.items():
-        if value and not info.get(key):
-            info[key] = value
+    _enrich_from_domclick(info, dc_fields)
 
-    if not info.get("build_year"):
-        year, material, url = get_year_from_domclick(
-            cadastral_number, city, street, house, block, settlement, city_district,
-        )
-        if year:
-            info["build_year"] = year
-        if material and not info.get("wall_material"):
-            info["wall_material"] = material
-        if url and not domclick_url:
-            domclick_url = url
-
-    return info, mingkh_url, domclick_url
+    return info, mingkh_url, domclick_url if dc_fields else None
 
 
 def get_building_year(

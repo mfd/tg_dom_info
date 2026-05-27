@@ -118,14 +118,15 @@ def _slug_candidates(
     city_district: Optional[str],
     cadastral_number: Optional[str],
 ) -> list[str]:
+    """Известный slug первым, затем авто-варианты (для дополнения к МинЖКХ)."""
+    candidates: list[str] = []
     known = _known_slug(cadastral_number, city, street, house_num, block_num)
     if known:
-        return [known]
+        candidates.append(known)
 
     street_slug = _slugify(street or "")
     house_slug = _house_slug_part(house_num, block_num)
     district = _district_slug(city_district)
-    candidates = []
 
     if district and street_slug:
         for micro_slug in MICRODISTRICT_SLUGS.values():
@@ -135,8 +136,8 @@ def _slug_candidates(
     if street_slug:
         candidates.append(f"{street_slug}--{house_slug}")
 
-    seen = set()
-    unique = []
+    seen: set[str] = set()
+    unique: list[str] = []
     for slug in candidates:
         if slug not in seen:
             seen.add(slug)
@@ -255,7 +256,7 @@ def get_building_from_domclick(
     settlement: Optional[str] = None,
     city_district: Optional[str] = None,
 ) -> tuple[dict[str, str], Optional[str]]:
-    """Возвращает (поля здания, url карточки Domclick)."""
+    """Возвращает (поля здания, url карточки Domclick). Всегда пробует все slug."""
     house_num, block_num = normalize_house_and_block(house, block)
     if not street or not house_num:
         return {}, None
@@ -264,25 +265,26 @@ def get_building_from_domclick(
     session = requests.Session()
     cad_key = cadastral_number if cadastral_number != "Не указан" else None
     known = _known_building(cad_key)
-    known_fields = dict(known.get("fields") or {}) if known else {}
+    merged: dict[str, str] = dict(known.get("fields") or {}) if known else {}
+    best_url: Optional[str] = None
+    if known and known.get("slug"):
+        best_url = f"https://{subdomain}.domclick.ru/building/{known['slug']}"
 
     for slug in _slug_candidates(
         city, settlement, street, house_num, block_num, city_district, cad_key,
     ):
         page_url = f"https://{subdomain}.domclick.ru/building/{slug}"
         html = _fetch_building_page(session, subdomain, slug)
-        if html:
-            fields = _extract_fields_from_html(html)
-            if fields:
-                return _merge_fields(known_fields, fields), page_url
-        if known and known.get("slug") == slug and known_fields:
-            return known_fields, page_url
+        if not html:
+            continue
+        parsed = _extract_fields_from_html(html)
+        if parsed:
+            merged = _merge_fields(merged, parsed)
+            best_url = page_url
 
-    return known_fields, (
-        f"https://{subdomain}.domclick.ru/building/{known['slug']}"
-        if known and known.get("slug")
-        else None
-    )
+    if merged:
+        return merged, best_url
+    return {}, None
 
 
 def get_year_from_domclick(

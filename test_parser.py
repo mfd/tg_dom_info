@@ -32,9 +32,8 @@ if __name__ == "__main__":
         city_district=details.get("city_district"),
     )
 
-    source_url = domclick_url or mingkh_url
     print("\n📊 РЕЗУЛЬТАТ:")
     if info:
-        print(format_building_fields(info, source_url))
+        print(format_building_fields(info, mingkh_url=mingkh_url, domclick_url=domclick_url))
     else:
         print("Данные не найдены")

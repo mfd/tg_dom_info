@@ -5,7 +5,11 @@ from typing import Optional
 from domclick_parse_dict import BUILDING_FIELD_ORDER, FIELD_DISPLAY_NAMES
 
 
-def format_building_fields(info: dict, source_url: Optional[str] = None) -> str:
+def format_building_fields(
+    info: dict,
+    mingkh_url: Optional[str] = None,
+    domclick_url: Optional[str] = None,
+) -> str:
     lines = []
     for key in BUILDING_FIELD_ORDER:
         value = info.get(key)
@@ -13,8 +17,10 @@ def format_building_fields(info: dict, source_url: Optional[str] = None) -> str:
             continue
         label = FIELD_DISPLAY_NAMES.get(key, key)
         lines.append(f"{label}: {value}")
-    if source_url:
-        lines.append(f"Источник: {source_url}")
+    if mingkh_url:
+        lines.append(f"МинЖКХ: {mingkh_url}")
+    if domclick_url:
+        lines.append(f"Domclick: {domclick_url}")
     return "\n".join(lines)
 
 
@@ -35,12 +41,13 @@ def format_building_telegram(
             continue
         label = FIELD_DISPLAY_NAMES.get(key, key)
         msg += f"📋 **{label}:** `{value}`\n"
+    links = []
     if mingkh_url:
-        msg += f"\n🔗 [МинЖКХ]({mingkh_url})"
-    if domclick_url and domclick_url != mingkh_url:
-        msg += f"\n🔗 [Domclick]({domclick_url})"
-    elif domclick_url:
-        msg += f"\n🔗 [Domclick]({domclick_url})"
+        links.append(f"🔗 [МинЖКХ]({mingkh_url})")
+    if domclick_url:
+        links.append(f"🔗 [Domclick]({domclick_url})")
     if gis_url:
-        msg += f"\n🔗 [ГИС ЖКХ]({gis_url})"
+        links.append(f"🔗 [ГИС ЖКХ]({gis_url})")
+    if links:
+        msg += "\n" + "\n".join(links)
     return msg

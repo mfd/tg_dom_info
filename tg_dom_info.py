@@ -88,8 +88,6 @@ def get_house_data(address: str) -> str:
             msg += "📅 **Год постройки:** `Нет данных`\n"
 
         msg += f"\n🆔 **ID ФИАС:** `{fias_id}`"
-        if not domclick_url and mingkh_url:
-            msg += f"\n🔗 [МинЖКХ]({mingkh_url})"
         if not domclick_url and not mingkh_url:
             msg += f"\n🔗 [ГИС ЖКХ]({gis_url})"
         
