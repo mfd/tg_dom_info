@@ -1,0 +1,125 @@
+import os
+import re
+from typing import Optional, Tuple
+import requests
+from bs4 import BeautifulSoup
+from dotenv import load_dotenv
+import urllib3
+
+# Отключаем предупреждения об отключенном SSL для корректной работы с гос. сайтами
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+load_dotenv()
+
+DADATA_API_KEY = os.getenv("DADATA_API")
+DADATA_SECRET_KEY = os.getenv("DADATA_SECRET")
+
+def get_dadata_address(query_text: str):
+    """Шаг 1: Стандартизация адреса через Dadata Clean API."""
+    if not DADATA_API_KEY: return None, {}
+    normalized_query = re.sub(r'(\d+)/(\d+)', r'\1 корпус \2', query_text)
+    suggest_url = "https://suggestions.dadata.ru/suggestions/api/4_1/rs/suggest/address"
+    headers = {"Content-Type": "application/json", "Authorization": f"Token {DADATA_API_KEY}"}
+    payload = {"query": normalized_query, "count": 1}
+    
+    try:
+        response = requests.post(suggest_url, json=payload, headers=headers, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            if data and data.get("suggestions"):
+                suggestion = data["suggestions"][0]
+                addr, det = suggestion.get("value"), suggestion.get("data", {})
+                if DADATA_SECRET_KEY:
+                    clean_url = "https://cleaner.dadata.ru/api/v1/clean/address"
+                    c_headers = {"Authorization": f"Token {DADATA_API_KEY}", "X-Secret": DADATA_SECRET_KEY, "Content-Type": "application/json"}
+                    c_res = requests.post(clean_url, json=[addr], headers=c_headers, timeout=5)
+                    if c_res.status_code == 200:
+                        c_data = c_res.json()
+                        if c_data and isinstance(c_data, list): det.update(c_data[0])
+                return addr, det
+    except Exception: pass
+    return None, {}
+
+def _normalize_house_and_block(house: str, block: Optional[str] = None) -> Tuple[str, Optional[str]]:
+    """Собирает номер дома и корпус из полей Dadata (house + block или 38/2)."""
+    house = (house or "").strip()
+    block = (block or "").strip() or None
+    if "/" in house:
+        parts = house.split("/", 1)
+        return parts[0].strip(), (parts[1].strip() or block)
+    if block:
+        return house, block
+    return house, None
+
+
+def _row_matches_house(row_text: str, house_num: str, block_num: Optional[str]) -> bool:
+    """Сопоставление адреса в строке таблицы без ложных срабатываний на площади (3847.5 → 38)."""
+    text = row_text.lower()
+    h = re.escape(house_num)
+    if block_num:
+        b = re.escape(block_num)
+        patterns = (
+            rf',\s*{h}\s*корпус\s*{b}\b',
+            rf',\s*{h}\s*к\s*{b}\b',
+            rf',\s*{h}/{b}\b',
+            rf'\b{h}/{b}\b',
+        )
+        return any(re.search(p, text) for p in patterns)
+    m = re.search(rf',\s*{h}(?:\s|$)', text)
+    if not m:
+        return False
+    rest = text[m.end():]
+    return not re.match(r'\s*(?:/|корпус|к\s*\d)', rest)
+
+
+def get_year_from_mingkh_smart(cadastral_number: str, city: str, street: str, house: str, block: Optional[str] = None):
+    """Шаг 2: Умный поиск на МинЖКХ со строгой фильтрацией по дому и корпусу."""
+    session = requests.Session()
+    session.headers.update({"User-Agent": "Mozilla/5.0", "Referer": "https://dom.mingkh.ru/"})
+
+    house_num, block_num = _normalize_house_and_block(house, block)
+
+    # Поиск по тексту с фильтрацией строк
+    if city and street and house_num:
+        street_words = street.lower().split()
+        ignored = ["степана", "ул", "улица", "проспект", "пр", "академика", "генерала", "летчика", "маршала"]
+        filtered = [w for w in street_words if w not in ignored]
+        core_street = filtered[0] if filtered else street
+
+        query_parts = [city.lower(), core_street, house_num]
+        if block_num:
+            query_parts.extend(["корпус", block_num])
+        query_str = " ".join(query_parts)
+        url = f"https://dom.mingkh.ru/search/?address={query_str}&searchtype=house"
+        try:
+            res = session.get(url, timeout=5, verify=False)
+            if res.status_code == 200:
+                soup = BeautifulSoup(res.text, 'html.parser')
+                table = soup.find('table', class_='table')
+                if table:
+                    for row in table.find_all('tr'):
+                        row_text = row.get_text()
+                        if not _row_matches_house(row_text, house_num, block_num):
+                            continue
+                        a_tag = row.find('a', href=True)
+                        if a_tag and "/streets/" not in a_tag['href']:
+                            return _parse_mingkh_html(session, f"https://dom.mingkh.ru{a_tag['href']}")
+        except Exception: pass
+    return None, None, None
+
+def _parse_mingkh_html(session, url):
+    """Парсинг карточки дома."""
+    try:
+        res = session.get(url, timeout=5, verify=False)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        page_text = soup.get_text()
+        
+        year_match = re.search(r'Год постройки\s*[:\s]*(\d{4})', page_text, re.IGNORECASE)
+        build_year = year_match.group(1) if year_match else None
+        
+        wall_material = None
+        for dl in soup.find_all('dl', class_='dl-horizontal'):
+            for dt, dd in zip(dl.find_all('dt'), dl.find_all('dd')):
+                if "стены" in dt.text.lower(): wall_material = dd.text.strip().capitalize()
+        return build_year, wall_material, url
+    except Exception: return None, None, None
