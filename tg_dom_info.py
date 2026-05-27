@@ -5,7 +5,8 @@ from logging.handlers import TimedRotatingFileHandler
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
 from aiogram.filters import CommandStart
-from parser_utils import get_dadata_address, get_year_from_mingkh_smart
+from building_format import format_building_telegram
+from parser_utils import get_building_info, get_dadata_address
 from settings import require_bot_token
 
 # --- НАСТРОЙКА КРУГЛОСУТОЧНОГО ЛОГИРОВАНИЯ ---
@@ -48,50 +49,49 @@ def get_house_data(address: str) -> str:
         house_type = details.get("house_type_full", "дом").lower()
         
         cadastre = details.get("house_cadnum") or details.get("cadnum") or "Не указан"
-        build_year = None
-        wall_material = None
+        building_info = {}
         mingkh_url = None
-        
+        domclick_url = None
+
         target_city = details.get("city") or details.get("settlement")
         target_street = details.get("street")
         target_house = details.get("house")
         target_block = details.get("block")
-        
+
         if target_city and target_street and target_house:
-            build_year, wall_material, mingkh_url = get_year_from_mingkh_smart(
+            building_info, mingkh_url, domclick_url = get_building_info(
                 cadastre,
                 details.get("city"),
                 target_street,
                 target_house,
                 target_block,
                 settlement=details.get("settlement"),
+                city_district=details.get("city_district"),
             )
 
-        if not build_year:
-            build_year = "Нет данных"
-
-        # Ссылка на официальную государственную карточку ГИС ЖКХ по ФИАС ID
         gis_url = f"https://dom.gosuslugi.ru/pds/public/services/fias/house?houseGuid={fias_id}"
-        
-        # Сборка финального Markdown-отчета для отправки пользователю
+
         msg = f"🏢 **Объект успешно найден!**\n"
         if "дом" not in house_type:
             msg += f"⚠️ *Внимание: Похоже, это административное или нежилое здание ({house_type}).*\n"
-            
-        msg += (
-            f"📍 `{postal_code} {correct_address}`\n\n"
-            f"🔢 **Кадастровый номер:** `{cadastre}`\n"
-            f"📅 **Год постройки:** `{build_year}`\n"
-        )
-        
-        if wall_material:
-            msg += f"🧱 **Материал стен:** `{wall_material}`\n"
-            
-        msg += f"🆔 **ID ФИАС:** `{fias_id}`\n\n"
-        
-        if mingkh_url:
-            msg += f"🔗 [Паспорт дома на МинЖКХ]({mingkh_url})\n"
-        msg += f"🔗 [Карточка объекта на ГИС ЖКХ]({gis_url})"
+
+        msg += f"📍 `{postal_code} {correct_address}`\n\n"
+        msg += f"🔢 **Кадастровый номер:** `{cadastre}`\n"
+
+        if building_info:
+            msg += format_building_telegram(
+                building_info,
+                mingkh_url=mingkh_url,
+                domclick_url=domclick_url,
+            )
+        else:
+            msg += "📅 **Год постройки:** `Нет данных`\n"
+
+        msg += f"\n🆔 **ID ФИАС:** `{fias_id}`"
+        if not domclick_url and mingkh_url:
+            msg += f"\n🔗 [МинЖКХ]({mingkh_url})"
+        if not domclick_url and not mingkh_url:
+            msg += f"\n🔗 [ГИС ЖКХ]({gis_url})"
         
         return msg
 
@@ -102,7 +102,10 @@ def get_house_data(address: str) -> str:
 
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
-    await message.answer("Привет! Отправь мне адрес дома, и я найду год постройки и параметры в базах Dadata и МинЖКХ.")
+    await message.answer(
+        "Привет! Отправь мне адрес дома — найду год постройки и характеристики "
+        "в Dadata, МинЖКХ и Domclick."
+    )
 
 
 @dp.message(F.text)

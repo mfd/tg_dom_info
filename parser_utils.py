@@ -11,6 +11,12 @@ from mingkh_parse_dict import (
     normalize_label,
 )
 from settings import DADATA_API, DADATA_SECRET
+from domclick_utils import get_building_from_domclick, get_year_from_domclick
+from house_utils import (
+    house_regex_fragment,
+    normalize_house_and_block,
+    normalize_house_token,
+)
 
 # Отключаем предупреждения об отключенном SSL для корректной работы с гос. сайтами
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -44,22 +50,11 @@ def get_dadata_address(query_text: str):
     except Exception: pass
     return None, {}
 
-def _normalize_house_and_block(house: str, block: Optional[str] = None) -> Tuple[str, Optional[str]]:
-    """Собирает номер дома и корпус из полей Dadata (house + block или 38/2)."""
-    house = (house or "").strip()
-    block = (block or "").strip() or None
-    if "/" in house:
-        parts = house.split("/", 1)
-        return parts[0].strip(), (parts[1].strip() or block)
-    if block:
-        return house, block
-    return house, None
-
 
 def _row_matches_house(row_text: str, house_num: str, block_num: Optional[str]) -> bool:
     """Сопоставление адреса в строке таблицы без ложных срабатываний на площади (3847.5 → 38)."""
     text = row_text.lower()
-    h = re.escape(house_num)
+    h = house_regex_fragment(house_num)
     if block_num:
         b = re.escape(block_num)
         patterns = (
@@ -68,9 +63,11 @@ def _row_matches_house(row_text: str, house_num: str, block_num: Optional[str]) 
             rf',\s*{h}/{b}\b',
             rf'\b{h}/{b}\b',
         )
-        return any(re.search(p, text) for p in patterns)
-    m = re.search(rf',\s*{h}(?:\s|$)', text)
+        return any(re.search(p, text, re.IGNORECASE) for p in patterns)
+    m = re.search(rf',\s*({h})(?:\s|$)', text, re.IGNORECASE)
     if not m:
+        return False
+    if normalize_house_token(m.group(1).replace(" ", "")) != normalize_house_token(house_num):
         return False
     rest = text[m.end():]
     return not re.match(r'\s*(?:/|корпус|к\s*\d)', rest)
@@ -88,7 +85,7 @@ def get_year_from_mingkh_smart(
     session = requests.Session()
     session.headers.update({"User-Agent": "Mozilla/5.0", "Referer": "https://dom.mingkh.ru/"})
 
-    house_num, block_num = _normalize_house_and_block(house, block)
+    house_num, block_num = normalize_house_and_block(house, block)
     place = (city or settlement or "").strip()
 
     # Поиск по тексту с фильтрацией строк
@@ -98,9 +95,12 @@ def get_year_from_mingkh_smart(
         filtered = [w for w in street_words if w not in ignored]
         core_street = filtered[0] if filtered else street
 
-        query_parts = [place.lower(), core_street, house_num]
-        if block_num:
-            query_parts.extend(["корпус", block_num])
+        house_query = (
+            f"{normalize_house_token(house_num)}/{block_num}"
+            if block_num
+            else normalize_house_token(house_num)
+        )
+        query_parts = [place.lower(), core_street, house_query]
         query_str = " ".join(query_parts)
         url = f"https://dom.mingkh.ru/search/?address={query_str}&searchtype=house"
         try:
@@ -118,6 +118,73 @@ def get_year_from_mingkh_smart(
                             return _parse_mingkh_html(session, f"https://dom.mingkh.ru{a_tag['href']}")
         except Exception: pass
     return None, None, None
+
+
+def get_building_info(
+    cadastral_number: str,
+    city: Optional[str],
+    street: str,
+    house: str,
+    block: Optional[str] = None,
+    settlement: Optional[str] = None,
+    city_district: Optional[str] = None,
+) -> Tuple[dict, Optional[str], Optional[str]]:
+    """МинЖКХ + дополнение с Domclick. Возвращает (поля, url_минжкх, url_domclick)."""
+    info: dict = {}
+    mingkh_url = None
+    domclick_url = None
+
+    year, material, mingkh_url = get_year_from_mingkh_smart(
+        cadastral_number, city, street, house, block, settlement
+    )
+    if year:
+        info["build_year"] = year
+    if material:
+        info["wall_material"] = material
+
+    dc_fields, domclick_url = get_building_from_domclick(
+        cadastral_number,
+        city,
+        street,
+        house,
+        block,
+        settlement,
+        city_district,
+    )
+    for key, value in dc_fields.items():
+        if value and not info.get(key):
+            info[key] = value
+
+    if not info.get("build_year"):
+        year, material, url = get_year_from_domclick(
+            cadastral_number, city, street, house, block, settlement, city_district,
+        )
+        if year:
+            info["build_year"] = year
+        if material and not info.get("wall_material"):
+            info["wall_material"] = material
+        if url and not domclick_url:
+            domclick_url = url
+
+    return info, mingkh_url, domclick_url
+
+
+def get_building_year(
+    cadastral_number: str,
+    city: Optional[str],
+    street: str,
+    house: str,
+    block: Optional[str] = None,
+    settlement: Optional[str] = None,
+    city_district: Optional[str] = None,
+) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """Совместимость: (год, материал, url)."""
+    info, mingkh_url, domclick_url = get_building_info(
+        cadastral_number, city, street, house, block, settlement, city_district,
+    )
+    url = mingkh_url or domclick_url
+    return info.get("build_year"), info.get("wall_material"), url
+
 
 def _extract_year_from_soup(soup: BeautifulSoup) -> Optional[str]:
     """Год постройки или ввода в эксплуатацию из карточки дома (см. mingkh_parse_dict)."""
