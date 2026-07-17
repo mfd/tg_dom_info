@@ -1,5 +1,6 @@
 aiogram
 python-dotenv
 requests
+curl_cffi
 beautifulsoup4
 urllib3

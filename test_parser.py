@@ -20,7 +20,13 @@ if __name__ == "__main__":
     street, house = details.get("street"), details.get("house")
     block = details.get("block")
 
-    print(f"✅ Дадата: {addr} | КН: {cadastre}")
+    try:
+        lat = float(details.get("geo_lat") or 0) or None
+        lon = float(details.get("geo_lon") or 0) or None
+    except (TypeError, ValueError):
+        lat, lon = None, None
+
+    print(f"✅ Дадата: {addr} | КН: {cadastre} | lat={lat} lon={lon}")
 
     info, mingkh_url, domclick_url = get_building_info(
         cadastre,
@@ -30,6 +36,15 @@ if __name__ == "__main__":
         block,
         settlement=details.get("settlement"),
         city_district=details.get("city_district"),
+        lat=lat,
+        lon=lon,
+        dadata_addr=addr,
+        region=details.get("region"),
+        region_type=details.get("region_type"),
+        area=details.get("area"),
+        area_type=details.get("area_type"),
+        settlement_type=details.get("settlement_type"),
+        street_type=details.get("street_type"),
     )
 
     print("\n📊 РЕЗУЛЬТАТ:")

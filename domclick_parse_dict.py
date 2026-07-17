@@ -17,23 +17,58 @@ BUILDING_FIELD_LABELS: dict[str, str] = {
     "холодное водоснабжение": "cold_water",
     "горячее водоснабжение": "hot_water",
     "водоотведение": "sewage",
+    "теплоснабжение": "heat_supply",
+    "энергоснабжение": "power_supply",
+    "вентиляция": "ventilation",
+    "тип перекрытий": "ceiling_type",
+    "тип фундамента": "foundation_type",
+    "класс энергоэффективности": "energy_class",
+    "газоснабжение": "gas_supply",
 }
 
-FIELD_DISPLAY_NAMES: dict[str, str] = {v: k.title() for k, v in BUILDING_FIELD_LABELS.items()}
-FIELD_DISPLAY_NAMES["build_year"] = "Год постройки"
-FIELD_DISPLAY_NAMES["wall_material"] = "Материал стен"
-FIELD_DISPLAY_NAMES["building_series"] = "Серия дома"
-FIELD_DISPLAY_NAMES["floors"] = "Количество этажей"
-FIELD_DISPLAY_NAMES["apartments"] = "Количество квартир"
-FIELD_DISPLAY_NAMES["garbage_chute"] = "Мусоропровод"
-FIELD_DISPLAY_NAMES["playground"] = "Детская площадка"
-FIELD_DISPLAY_NAMES["entrances"] = "Количество подъездов"
-FIELD_DISPLAY_NAMES["elevators"] = "Количество лифтов"
-FIELD_DISPLAY_NAMES["cold_water"] = "Холодное водоснабжение"
-FIELD_DISPLAY_NAMES["hot_water"] = "Горячее водоснабжение"
-FIELD_DISPLAY_NAMES["sewage"] = "Водоотведение"
+FIELD_DISPLAY_NAMES: dict[str, str] = {
+    "build_year": "Год постройки",
+    "wall_material": "Материал стен",
+    "building_series": "Серия дома",
+    "floors": "Количество этажей",
+    "apartments": "Количество квартир",
+    "garbage_chute": "Мусоропровод",
+    "playground": "Детская площадка",
+    "entrances": "Количество подъездов",
+    "elevators": "Количество лифтов",
+    "cold_water": "Холодное водоснабжение",
+    "hot_water": "Горячее водоснабжение",
+    "sewage": "Водоотведение",
+    "heat_supply": "Теплоснабжение",
+    "power_supply": "Энергоснабжение",
+    "ventilation": "Вентиляция",
+    "ceiling_type": "Тип перекрытий",
+    "foundation_type": "Тип фундамента",
+    "energy_class": "Класс энергоэффективности",
+    "gas_supply": "Газоснабжение",
+}
 
-BUILDING_FIELD_ORDER: tuple[str, ...] = tuple(BUILDING_FIELD_LABELS.values())
+BUILDING_FIELD_ORDER: tuple[str, ...] = (
+    "build_year",
+    "wall_material",
+    "building_series",
+    "floors",
+    "apartments",
+    "garbage_chute",
+    "playground",
+    "entrances",
+    "elevators",
+    "cold_water",
+    "hot_water",
+    "sewage",
+    "heat_supply",
+    "power_supply",
+    "ventilation",
+    "ceiling_type",
+    "foundation_type",
+    "energy_class",
+    "gas_supply",
+)
 
 # Подписи / ключи JSON с годом постройки
 YEAR_JSON_KEYS: frozenset[str] = frozenset(
@@ -47,20 +82,49 @@ YEAR_JSON_KEYS: frozenset[str] = frozenset(
     }
 )
 
-# JSON-ключи Domclick → код поля
+# JSON-ключи Domclick → код поля (web + mobile API)
 JSON_FIELD_KEYS: dict[str, str] = {
+    # build year
     "buildyear": "build_year",
     "yearbuilt": "build_year",
+    "builtyear": "build_year",
+    "constructionyear": "build_year",
+    "year": "build_year",
+    # wall material
     "wallmaterial": "wall_material",
     "materialwalls": "wall_material",
+    "housematerial": "wall_material",
+    "material": "wall_material",
+    # building series
     "buildingseries": "building_series",
     "series": "building_series",
+    "projecttype": "building_series",
+    # floors
     "floorscount": "floors",
+    "floorstotal": "floors",
     "floors": "floors",
+    "floorsnum": "floors",
+    # apartments
     "flatscount": "apartments",
     "flats": "apartments",
+    "apartmentscount": "apartments",
+    # entrances / elevators
     "entrancescount": "entrances",
+    "porchescount": "entrances",
     "elevatorscount": "elevators",
+    # utilities
+    "heatsupply": "heat_supply",
+    "powersupply": "power_supply",
+    "electricitysupply": "power_supply",
+    "ventilation": "ventilation",
+    "gassupply": "gas_supply",
+    # structural
+    "ceilingtype": "ceiling_type",
+    "overlapping": "ceiling_type",
+    "foundationtype": "foundation_type",
+    "foundation": "foundation_type",
+    "energyclass": "energy_class",
+    "energyefficiency": "energy_class",
 }
 
 YEAR_PAGE_TEXT_RE: Pattern[str] = re.compile(
@@ -86,6 +150,15 @@ DISTRICT_SLUGS: dict[str, str] = {
 MICRODISTRICT_SLUGS: dict[str, str] = {
     "зеленая роща": "zelenaya-rosha-m-n",
     "зелёная роща": "zelenaya-rosha-m-n",
+    "черемушки": "cheryomushki",
+    "черёмушки": "cheryomushki",
+}
+
+# Улица (нормализованное имя) → slug на Domclick (без «ул» внутри названия)
+STREET_SLUG_ALIASES: dict[str, str] = {
+    "минигали губайдуллина": "minigali-gubajdullina",
+    "менделеева": "mendeleeva",
+    "степана злобина": "stepana-zlobina",
 }
 
 # slug + поля (если Domclick недоступен из-за Qrator)
@@ -108,12 +181,28 @@ KNOWN_BUILDINGS: dict[str, dict] = {
                 "из тепловой сети"
             ),
             "sewage": "Центральное",
+            "heat_supply": "Центральное",
+            "power_supply": "Центральное",
+            "ventilation": "Приточно-вытяжная",
+            "ceiling_type": "Железобетонный",
+            "foundation_type": "Ленточный",
+            "energy_class": "Не присвоен",
+            "gas_supply": "Центральное",
         },
     },
     "02:55:010710:213": {
         "slug": "sovetskij--zelenaya-rosha-m-n--mendeleeva--173-3",
         "fields": {
             "build_year": "2003",
+        },
+    },
+    "02:55:010701:2416": {
+        "slug": "ulica-minigali-gubajdullina--10-1",
+        "fields": {
+            "build_year": "2023",
+            "wall_material": "Кирпичный",
+            "floors": "27",
+            "entrances": "2",
         },
     },
 }

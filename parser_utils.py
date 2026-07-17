@@ -11,7 +11,7 @@ from mingkh_parse_dict import (
     normalize_label,
 )
 from settings import DADATA_API, DADATA_SECRET
-from domclick_utils import get_building_from_domclick, get_year_from_domclick
+from domclick_utils import get_building_from_domclick, get_building_from_domclick_api, get_year_from_domclick
 from house_utils import (
     house_regex_fragment,
     normalize_house_and_block,
@@ -135,10 +135,37 @@ def get_building_info(
     block: Optional[str] = None,
     settlement: Optional[str] = None,
     city_district: Optional[str] = None,
+    lat: Optional[float] = None,
+    lon: Optional[float] = None,
+    dadata_addr: Optional[str] = None,
+    region: Optional[str] = None,
+    region_type: Optional[str] = None,
+    area: Optional[str] = None,
+    area_type: Optional[str] = None,
+    settlement_type: Optional[str] = None,
+    street_type: Optional[str] = None,
 ) -> Tuple[dict, Optional[str], Optional[str]]:
-    """МинЖКХ, затем всегда Domclick (дополнение). Возвращает (поля, url_минжкх, url_domclick)."""
-    info: dict = {}
+    """Fallback-цепочка: mobile API → HTML (suggest+slug+куки) → МинЖКХ.
+    Возвращает (поля, url_минжкх, url_domclick)."""
+    # 1. Domclick mobile API по координатам (публичный, работает при наличии объявлений)
+    if lat and lon:
+        dc_fields, domclick_url = get_building_from_domclick_api(lat, lon, house=house, block=block)
+        if dc_fields:
+            return dc_fields, None, domclick_url
 
+    # 2. Domclick: suggest → user_realty API / HTML → поля
+    dc_fields, domclick_url = get_building_from_domclick(
+        cadastral_number, city, street, house, block, settlement, city_district,
+        dadata_addr=dadata_addr,
+        region=region, region_type=region_type,
+        area=area, area_type=area_type,
+        settlement_type=settlement_type, street_type=street_type,
+    )
+    if dc_fields:
+        return dc_fields, None, domclick_url
+
+    # 3. МинЖКХ (последний fallback, без авторизации)
+    info: dict = {}
     year, material, mingkh_url = get_year_from_mingkh_smart(
         cadastral_number, city, street, house, block, settlement
     )
@@ -147,18 +174,7 @@ def get_building_info(
     if material:
         info["wall_material"] = material
 
-    dc_fields, domclick_url = get_building_from_domclick(
-        cadastral_number,
-        city,
-        street,
-        house,
-        block,
-        settlement,
-        city_district,
-    )
-    _enrich_from_domclick(info, dc_fields)
-
-    return info, mingkh_url, domclick_url if dc_fields else None
+    return info, mingkh_url, None
 
 
 def get_building_year(

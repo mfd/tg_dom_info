@@ -15,8 +15,8 @@ def _env(name: str) -> Optional[str]:
 BOT_TOKEN = _env("BOT_TOKEN")
 DADATA_API = _env("DADATA_API")
 DADATA_SECRET = _env("DADATA_SECRET")
-DOMCLICK_COOKIE = _env("DOMCLICK_COOKIE")
 TWOGIS_API = _env("TWOGIS_API")
+ADMIN_ID = _env("ADMIN_ID")
 
 def require_bot_token() -> str:
     if not BOT_TOKEN:
