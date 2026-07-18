@@ -41,6 +41,7 @@ dp = Dispatcher()
 
 _DOMCLICK_URL = "https://domclick.ru"
 _AWAITING_COOKIE: set[int] = set()
+_stale_cookie_notified: bool = False
 
 
 def _is_admin(user_id: int) -> bool:
@@ -175,6 +176,22 @@ def get_house_data(address: str, is_admin: bool = False) -> str:
         return f"⚠️ Ошибка при обработке запроса: {e}"
 
 
+async def _notify_admin_if_stale() -> None:
+    global _stale_cookie_notified
+    if _stale_cookie_notified or not ADMIN_ID or not is_qrator_cookies_stale():
+        return
+    _stale_cookie_notified = True
+    try:
+        await bot.send_message(
+            ADMIN_ID,
+            "⚠️ <b>Куки Domclick устарели</b> — данные об объектах неполные.\n\n"
+            "Обнови куки через /setcookie",
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logging.warning(f"Не удалось отправить уведомление админу: {e}")
+
+
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     await message.answer(
@@ -247,7 +264,9 @@ async def cmd_setcookie(message: Message):
         )
         return
 
+    global _stale_cookie_notified
     save_cookie(parts[1].strip())
+    _stale_cookie_notified = False
     await message.answer("✅ Куки Domclick обновлены.")
 
 
@@ -319,6 +338,7 @@ async def handle_location(message: Message):
     reply_text = await asyncio.get_event_loop().run_in_executor(None, resolve)
     await status_msg.delete()
     await message.answer(reply_text, parse_mode="HTML", disable_web_page_preview=True)
+    await _notify_admin_if_stale()
 
 
 @dp.message(F.text)
@@ -335,6 +355,7 @@ async def handle_address(message: Message):
 
     await status_msg.delete()
     await message.answer(reply_text, parse_mode="HTML", disable_web_page_preview=True)
+    await _notify_admin_if_stale()
 
 
 async def main():
