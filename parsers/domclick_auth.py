@@ -1,8 +1,8 @@
 import json
 from pathlib import Path
 
-COOKIES_FILE = Path(__file__).resolve().parent / "domclick_cookies.txt"
-MOBILE_AUTH_FILE = Path(__file__).resolve().parent / "domclick_mobile_auth.json"
+COOKIES_FILE = Path(__file__).resolve().parent.parent / "domclick_cookies.txt"
+MOBILE_AUTH_FILE = Path(__file__).resolve().parent.parent / "domclick_mobile_auth.json"
 
 
 def save_cookie(cookie_str: str) -> None:

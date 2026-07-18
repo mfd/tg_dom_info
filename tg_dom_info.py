@@ -9,10 +9,11 @@ from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from building_format import format_building_telegram
-from domclick_auth import COOKIES_FILE, MOBILE_AUTH_FILE, save_cookie, save_mobile_auth
-from domclick_utils import is_qrator_blocked
-from parser_utils import get_building_info, get_dadata_address
+from utils.format import format_building_telegram
+from parsers.domclick_auth import COOKIES_FILE, MOBILE_AUTH_FILE, save_cookie, save_mobile_auth
+from parsers.domclick import is_qrator_blocked, is_qrator_cookies_stale, get_last_suggest_canonical
+from parsers.aggregator import get_building_info
+from parsers.dadata import get_dadata_address, get_dadata_by_coords
 from settings import require_bot_token, ADMIN_ID
 
 # --- ЛОГИРОВАНИЕ ---
@@ -46,7 +47,7 @@ def _is_admin(user_id: int) -> bool:
     return ADMIN_ID is not None and str(user_id) == str(ADMIN_ID)
 
 
-def get_house_data(address: str) -> str:
+def get_house_data(address: str, is_admin: bool = False) -> str:
     try:
         correct_address, details = get_dadata_address(address)
 
@@ -55,6 +56,16 @@ def get_house_data(address: str) -> str:
 
         if not details.get("house"):
             return "❌ Адрес найден, но, пожалуйста, укажите конкретный номер дома или корпуса."
+
+        if not details.get("city") and not details.get("settlement"):
+            return "❌ Не удалось определить город или населённый пункт. Пожалуйста, укажите адрес полнее, например: <code>Уфа, Ленина, 70</code>"
+
+        city_or_settlement = (details.get("city") or details.get("settlement") or "").lower()
+        if city_or_settlement and city_or_settlement not in address.lower():
+            return (
+                "❌ Укажите город или населённый пункт в запросе.\n"
+                f"Например: <code>{(details.get('city') or details.get('settlement'))}, {address}</code>"
+            )
 
         fias_id = details.get("house_fias_id")
         postal_code = details.get("postal_code") or ""
@@ -98,12 +109,39 @@ def get_house_data(address: str) -> str:
 
         gis_url = f"https://dom.gosuslugi.ru/pds/public/services/fias/house?houseGuid={fias_id}"
 
-        msg = "🏢 **Объект успешно найден!**\n"
-        if "дом" not in house_type:
-            msg += f"⚠️ *Внимание: Похоже, это административное или нежилое здание ({house_type}).*\n"
+        # Строка локации: микрорайон (из Domclick canonical) + район (из Dadata)
+        location_parts = []
+        canonical = get_last_suggest_canonical()
+        if canonical:
+            for part in canonical.split(","):
+                p = part.strip()
+                if any(m in p.lower() for m in ("м-н", "мкр", "микрорайон")):
+                    location_parts.append(p)
+                    break
+        city_district = details.get("city_district")
+        city_district_type = details.get("city_district_type_full") or details.get("city_district_type") or "район"
+        if city_district:
+            location_parts.append(f"{city_district} {city_district_type}")
+        city_name = details.get("city") or details.get("settlement") or ""
+        if city_name:
+            location_parts.append(city_name)
+        if postal_code:
+            location_parts.append(postal_code)
+        location_line = ", ".join(location_parts)
 
-        msg += f"📍 `{postal_code} {correct_address}`\n\n"
-        msg += f"🔢 **Кадастровый номер:** `{cadastre}`\n"
+        def e(t: str) -> str:
+            return t.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        msg = "<b>Объект успешно найден!</b>\n"
+        if "дом" not in house_type:
+            msg += f"<i>Внимание: Похоже, это административное или нежилое здание ({e(house_type)}).</i>\n"
+
+        msg += f"<code>{e(correct_address)}</code>\n"
+        if location_line:
+            msg += f"<code>{e(location_line)}</code>\n"
+        msg += "\n"
+        if cadastre and cadastre != "Не указан":
+            msg += f"<b>Кадастровый номер:</b> <code>{e(cadastre)}</code>\n"
 
         if building_info:
             msg += format_building_telegram(
@@ -112,11 +150,23 @@ def get_house_data(address: str) -> str:
                 domclick_url=domclick_url,
             )
         else:
-            msg += "📅 **Год постройки:** `Нет данных`\n"
+            msg += "<b>Год постройки:</b> <code>Нет данных</code>\n"
+            links = []
+            if mingkh_url:
+                label = "Реформа ЖКХ" if "reformagkh" in mingkh_url else "МинЖКХ"
+                links.append(f'<a href="{mingkh_url}">{label}</a>')
+            if domclick_url:
+                links.append(f'<a href="{domclick_url}">Domclick</a>')
+            if links:
+                msg += "\n" + " | ".join(links) + "\n"
 
-        msg += f"\n🆔 **ID ФИАС:** `{fias_id}`"
+        if fias_id:
+            msg += f'\n<b>ID ФИАС:</b> <code>{e(str(fias_id))}</code>'
         if not domclick_url and not mingkh_url:
-            msg += f"\n🔗 [ГИС ЖКХ]({gis_url})"
+            msg += f'\n<a href="{gis_url}">ГИС ЖКХ</a>'
+
+        if is_admin and domclick_url and is_qrator_cookies_stale():
+            msg += '\n\n⚠️ <i>Куки Domclick устарели — данные неполные. Обновите через /setcookie</i>'
 
         return msg
 
@@ -137,6 +187,10 @@ async def cmd_start(message: Message):
 async def cmd_domclick(message: Message):
     """Проверить доступность Domclick и запросить авторизацию."""
     if not _is_admin(message.from_user.id):
+        if ADMIN_ID is None:
+            await message.answer("⚠️ ADMIN_ID не задан в настройках бота.")
+        else:
+            await message.answer("⛔ У вас нет прав администратора.")
         return
 
     blocked = await asyncio.get_event_loop().run_in_executor(None, is_qrator_blocked)
@@ -150,12 +204,19 @@ async def cmd_domclick(message: Message):
         InlineKeyboardButton(text="Открыть Domclick в браузере", url=_DOMCLICK_URL)
     ]])
     await message.answer(
-        "🔒 Domclick заблокирован Qrator.\n\n"
-        "1. Нажмите кнопку ниже — откроется Domclick в браузере\n"
-        "2. Войдите в аккаунт (если нужно)\n"
-        "3. Скопируйте куки из браузера и отправьте командой:\n"
-        "`/setcookie <строка куки>`",
-        parse_mode="Markdown",
+        "🔒 Domclick заблокирован Qrator — нужны свежие куки\\.\n\n"
+        "Qrator хранит bypass\\-токен в HttpOnly\\-куках, поэтому `document.cookie` не поможет\\. "
+        "Нужно копировать из Network:\n\n"
+        "1\\. Нажмите кнопку ниже — откроется domclick\\.ru\n"
+        "2\\. Откройте DevTools: `F12` или `Cmd+Option+I` на Mac\n"
+        "3\\. Перейдите на вкладку *Network*\n"
+        "4\\. Обновите страницу `F5`\n"
+        "5\\. Кликните на любой запрос к `domclick.ru`\n"
+        "6\\. Справа: *Headers* → *Request Headers* → найдите строку `cookie:`\n"
+        "7\\. Скопируйте всё значение целиком \\(правая кнопка → Copy value\\)\n\n"
+        "Затем отправьте боту:\n"
+        "`/setcookie <вставленная строка>`",
+        parse_mode="MarkdownV2",
         reply_markup=kb,
     )
 
@@ -164,11 +225,26 @@ async def cmd_domclick(message: Message):
 async def cmd_setcookie(message: Message):
     """Сохранить куки Domclick. Использование: /setcookie <cookie string>"""
     if not _is_admin(message.from_user.id):
+        if ADMIN_ID is None:
+            await message.answer("⚠️ ADMIN_ID не задан в настройках бота.")
+        else:
+            await message.answer("⛔ У вас нет прав администратора.")
         return
 
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip():
-        await message.answer("Использование: `/setcookie <строка куки>`", parse_mode="Markdown")
+        await message.answer(
+            "Как получить куки Domclick:\n\n"
+            "1. Открой <a href=\"https://domclick.ru\">domclick.ru</a> в браузере\n"
+            "2. <code>F12</code> → вкладка <b>Network</b>\n"
+            "3. Обнови страницу <code>F5</code>\n"
+            "4. Кликни на любой запрос к <code>domclick.ru</code>\n"
+            "5. Справа: <b>Headers → Request Headers → cookie:</b>\n"
+            "6. Правая кнопка → <b>Copy value</b>\n\n"
+            "Затем отправь:\n<code>/setcookie </code><i>вставленная строка</i>",
+            parse_mode="HTML",
+            disable_web_page_preview=True,
+        )
         return
 
     save_cookie(parts[1].strip())
@@ -181,6 +257,10 @@ async def cmd_setmobileauth(message: Message):
     Формат: /setmobileauth cookie=<...> hash=<...> timestamp=<...>
     Можно передавать только нужные параметры."""
     if not _is_admin(message.from_user.id):
+        if ADMIN_ID is None:
+            await message.answer("⚠️ ADMIN_ID не задан в настройках бота.")
+        else:
+            await message.answer("⛔ У вас нет прав администратора.")
         return
 
     parts = message.text.split(maxsplit=1)
@@ -222,17 +302,39 @@ async def cmd_setmobileauth(message: Message):
     await message.answer(f"✅ Mobile auth обновлён: {', '.join(saved)}.")
 
 
+@dp.message(F.location)
+async def handle_location(message: Message):
+    lat = message.location.latitude
+    lon = message.location.longitude
+    status_msg = await message.answer("🔍 Определяю адрес по координатам...")
+
+    admin = _is_admin(message.from_user.id)
+
+    def resolve():
+        addr, details = get_dadata_by_coords(lat, lon)
+        if not addr or not details.get("house"):
+            return "❌ Не удалось определить адрес дома по этой геолокации. Попробуйте выбрать точку поближе к входу в дом."
+        return get_house_data(addr, is_admin=admin)
+
+    reply_text = await asyncio.get_event_loop().run_in_executor(None, resolve)
+    await status_msg.delete()
+    await message.answer(reply_text, parse_mode="HTML", disable_web_page_preview=True)
+
+
 @dp.message(F.text)
 async def handle_address(message: Message):
     user = message.from_user
     username = f"@{user.username}" if user.username else "NoUsername"
     logging.info(f"{user.full_name} ({username}) | ID: {user.id} | Запрос: {message.text}")
 
+    admin = _is_admin(user.id)
     status_msg = await message.answer("🔍 Собираю технические характеристики объекта...")
-    reply_text = await asyncio.get_event_loop().run_in_executor(None, get_house_data, message.text)
+    reply_text = await asyncio.get_event_loop().run_in_executor(
+        None, get_house_data, message.text, admin
+    )
 
     await status_msg.delete()
-    await message.answer(reply_text, parse_mode="Markdown", disable_web_page_preview=True)
+    await message.answer(reply_text, parse_mode="HTML", disable_web_page_preview=True)
 
 
 async def main():

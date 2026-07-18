@@ -73,7 +73,7 @@ BUILDING_FIELD_ORDER: tuple[str, ...] = (
 # Подписи / ключи JSON с годом постройки
 YEAR_JSON_KEYS: frozenset[str] = frozenset(
     {
-        "buildyear",
+        # "buildyear" убран — это ключ из объявлений (house.buildYear), а не карточки здания
         "yearbuilt",
         "builtyear",
         "constructionyear",
@@ -84,8 +84,7 @@ YEAR_JSON_KEYS: frozenset[str] = frozenset(
 
 # JSON-ключи Domclick → код поля (web + mobile API)
 JSON_FIELD_KEYS: dict[str, str] = {
-    # build year
-    "buildyear": "build_year",
+    # build year (только builtyear — buildyear это ключ в объявлениях, не в карточке здания)
     "yearbuilt": "build_year",
     "builtyear": "build_year",
     "constructionyear": "build_year",
@@ -108,19 +107,38 @@ JSON_FIELD_KEYS: dict[str, str] = {
     "flatscount": "apartments",
     "flats": "apartments",
     "apartmentscount": "apartments",
+    # apartments count
+    "flats": "apartments",
     # entrances / elevators
     "entrancescount": "entrances",
+    "entrancecount": "entrances",    # entranceCount (Domclick building obj)
     "porchescount": "entrances",
     "elevatorscount": "elevators",
-    # utilities
+    # garbage chute
+    "chute": "garbage_chute",
+    "garbagechute": "garbage_chute",
+    # playground
+    "playground": "playground",
+    # utilities (Domclick uses *Type suffix)
     "heatsupply": "heat_supply",
+    "heatingtype": "heat_supply",    # heatingType
     "powersupply": "power_supply",
     "electricitysupply": "power_supply",
+    "electricaltype": "power_supply",  # electricalType
     "ventilation": "ventilation",
+    "ventilationtype": "ventilation",  # ventilationType
     "gassupply": "gas_supply",
+    "coldwatertype": "cold_water",   # coldWaterType
+    "coldwater": "cold_water",
+    "hotwatertype": "hot_water",     # hotWaterType
+    "hotwater": "hot_water",
+    "seweragetype": "sewage",        # sewerageType
+    "sewage": "sewage",
+    "sewagesystem": "sewage",
     # structural
     "ceilingtype": "ceiling_type",
     "overlapping": "ceiling_type",
+    "floortype": "ceiling_type",     # floorType (Domclick: тип перекрытий)
     "foundationtype": "foundation_type",
     "foundation": "foundation_type",
     "energyclass": "energy_class",
@@ -135,77 +153,24 @@ YEAR_PAGE_TEXT_RE: Pattern[str] = re.compile(
 YEAR_VALUE_RE: Pattern[str] = re.compile(r"\b(19\d{2}|20\d{2})\b")
 
 CITY_SUBDOMAINS: dict[str, str] = {
-    "уфа": "ufa",
+    # Только города, где _slugify() даёт неверный субдомен Domclick
+    "москва": "msk",
+    "санкт-петербург": "spb",
+    "нижний новгород": "nn",
+    "ростов-на-дону": "rostov",
 }
 
-DISTRICT_SLUGS: dict[str, str] = {
-    "советский": "sovetskij",
-    "ленинский": "leninskij",
-    "орджоникидзевский": "ordzhonikidzevskij",
-    "октябрьский": "oktyabrskij",
-    "калининский": "kalininskij",
-    "демский": "demskij",
-}
+DISTRICT_SLUGS: dict[str, str] = {}
 
 MICRODISTRICT_SLUGS: dict[str, str] = {
+    # щ → Domclick транслитерирует как "sh" (не стандартное "sch")
     "зеленая роща": "zelenaya-rosha-m-n",
     "зелёная роща": "zelenaya-rosha-m-n",
-    "черемушки": "cheryomushki",
-    "черёмушки": "cheryomushki",
 }
 
-# Улица (нормализованное имя) → slug на Domclick (без «ул» внутри названия)
-STREET_SLUG_ALIASES: dict[str, str] = {
-    "минигали губайдуллина": "minigali-gubajdullina",
-    "менделеева": "mendeleeva",
-    "степана злобина": "stepana-zlobina",
-}
+STREET_SLUG_ALIASES: dict[str, str] = {}
 
-# slug + поля (если Domclick недоступен из-за Qrator)
-KNOWN_BUILDINGS: dict[str, dict] = {
-    "02:55:010710:198": {
-        "slug": "sovetskij--zelenaya-rosha-m-n--mendeleeva--171-3",
-        "fields": {
-            "build_year": "1994",
-            "wall_material": "Кирпичный",
-            "building_series": "v-кирпичный",
-            "floors": "12",
-            "apartments": "56",
-            "garbage_chute": "На лестничной клетке",
-            "playground": "есть",
-            "entrances": "3",
-            "elevators": "3",
-            "cold_water": "Центральное",
-            "hot_water": (
-                "Открытая с отбором сетевой воды на горячее водоснабжение "
-                "из тепловой сети"
-            ),
-            "sewage": "Центральное",
-            "heat_supply": "Центральное",
-            "power_supply": "Центральное",
-            "ventilation": "Приточно-вытяжная",
-            "ceiling_type": "Железобетонный",
-            "foundation_type": "Ленточный",
-            "energy_class": "Не присвоен",
-            "gas_supply": "Центральное",
-        },
-    },
-    "02:55:010710:213": {
-        "slug": "sovetskij--zelenaya-rosha-m-n--mendeleeva--173-3",
-        "fields": {
-            "build_year": "2003",
-        },
-    },
-    "02:55:010701:2416": {
-        "slug": "ulica-minigali-gubajdullina--10-1",
-        "fields": {
-            "build_year": "2023",
-            "wall_material": "Кирпичный",
-            "floors": "27",
-            "entrances": "2",
-        },
-    },
-}
+KNOWN_BUILDINGS: dict[str, dict] = {}
 
 
 def normalize_field_label(text: str) -> str:

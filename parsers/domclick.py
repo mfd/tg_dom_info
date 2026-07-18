@@ -11,8 +11,8 @@ from typing import Any, Optional
 from bs4 import BeautifulSoup
 from curl_cffi import requests as curl_requests
 
-_COOKIES_FILE = Path(__file__).resolve().parent / "domclick_cookies.txt"
-_MOBILE_AUTH_FILE = Path(__file__).resolve().parent / "domclick_mobile_auth.json"
+_COOKIES_FILE = Path(__file__).resolve().parent.parent / "domclick_cookies.txt"
+_MOBILE_AUTH_FILE = Path(__file__).resolve().parent.parent / "domclick_mobile_auth.json"
 
 _MOBILE_API_URL = "https://bff-search-mobile.domclick.ru/api/v2/ios/research_api/offers"
 _SUGGEST_URL = "https://api.domclick.ru/my-home/geo-facade/api/v2/suggest"
@@ -38,6 +38,19 @@ _WALL_TYPE_MAP = {
 }
 
 
+_last_canonical: Optional[str] = None
+_qrator_blocked: bool = False
+
+
+def get_last_suggest_canonical() -> Optional[str]:
+    return _last_canonical
+
+
+def is_qrator_cookies_stale() -> bool:
+    """True если последний запрос к HTML-странице здания был заблокирован Qrator."""
+    return _qrator_blocked
+
+
 def _load_cookie() -> Optional[str]:
     if _COOKIES_FILE.exists():
         text = _COOKIES_FILE.read_text(encoding="utf-8").strip()
@@ -54,7 +67,7 @@ def _load_mobile_auth() -> dict:
             pass
     return {}
 
-from domclick_parse_dict import (
+from parsers.domclick_fields import (
     BUILDING_FIELD_LABELS,
     BUILDING_FIELD_ORDER,
     CITY_SUBDOMAINS,
@@ -68,7 +81,7 @@ from domclick_parse_dict import (
     YEAR_VALUE_RE,
     normalize_field_label,
 )
-from house_utils import normalize_house_and_block, normalize_house_token
+from utils.house import normalize_house_and_block, normalize_house_token
 
 _TRANSLIT = {
     "а": "a", "б": "b", "в": "v", "г": "g", "д": "d", "е": "e", "ё": "e",
@@ -211,10 +224,11 @@ def _city_subdomain(city: Optional[str], settlement: Optional[str]) -> str:
     return "ufa"
 
 
-def _house_slug_part(house_num: str, block_num: Optional[str]) -> str:
+def _house_slug_part(house_num: str, block_num: Optional[str], k_prefix: bool = False) -> str:
     token = normalize_house_token(house_num).replace(" ", "")
     if block_num:
-        return f"{token}-{block_num}"
+        prefix = "k" if k_prefix else ""
+        return f"{token}-{prefix}{block_num}"
     return token
 
 
@@ -266,19 +280,17 @@ def _slug_candidates(
 
     street_slug = _street_slug(street or "")
     house_slug = _house_slug_part(house_num, block_num)
+    house_slug_k = _house_slug_part(house_num, block_num, k_prefix=True)
     district = _district_slug(city_district)
 
-    # Формат Domclick: ulica-minigali-gubajdullina--10-1
-    if street_slug:
-        candidates.append(f"ulica-{street_slug}--{house_slug}")
-
-    if district and street_slug:
-        for micro_slug in MICRODISTRICT_SLUGS.values():
-            candidates.append(f"{district}--{micro_slug}--{street_slug}--{house_slug}")
-        candidates.append(f"{district}--{street_slug}--{house_slug}")
-
-    if street_slug:
-        candidates.append(f"{street_slug}--{house_slug}")
+    for hs in dict.fromkeys([house_slug, house_slug_k]):  # оба формата: 66-1 и 66-k1
+        if street_slug:
+            candidates.append(f"ulica-{street_slug}--{hs}")
+        if district and street_slug:
+            candidates.append(f"{district}--ulica-{street_slug}--{hs}")
+            candidates.append(f"{district}--{street_slug}--{hs}")
+        if street_slug:
+            candidates.append(f"{street_slug}--{hs}")
 
     seen: set[str] = set()
     unique: list[str] = []
@@ -369,21 +381,58 @@ def _extract_fields_from_html(html: str) -> dict[str, str]:
     return fields
 
 
+def _extract_building_json(html: str) -> dict:
+    """Находит объект "building":{...} в инлайн-JS Domclick и парсит его как JSON."""
+    start_marker = '"building":{'
+    idx = html.find(start_marker)
+    if idx < 0:
+        return {}
+    obj_start = idx + len('"building":')
+    depth = 0
+    i = obj_start
+    in_string = False
+    escape_next = False
+    while i < len(html):
+        c = html[i]
+        if escape_next:
+            escape_next = False
+        elif c == "\\" and in_string:
+            escape_next = True
+        elif c == '"':
+            in_string = not in_string
+        elif not in_string:
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        return json.loads(html[obj_start : i + 1])
+                    except json.JSONDecodeError:
+                        return {}
+        i += 1
+    return {}
+
+
 def _extract_building_fields_from_js(html: str, fields: dict[str, str]) -> None:
     """Извлекает поля здания из JS-бандла клиентских страниц Domclick."""
-    # Ищем фрагмент с wallMaterial — он уникален для карточки здания
+    # Основной способ: парсим весь "building":{...} объект напрямую
+    bld = _extract_building_json(html)
+    if bld:
+        _fields_from_json(bld, fields)
+        return
+
+    # Fallback: точечные регексы (если структура изменилась)
     m = re.search(r'"wallMaterial"\s*:\s*"([^"]{2,80})"', html)
     if m and not fields.get("wall_material"):
         _set_field(fields, "wall_material", m.group(1))
 
-    # builtYear / buildYear рядом с wallMaterial — берём первый реалистичный
-    for pat in (r'"builtYear"\s*:\s*(\d{4})', r'"buildYear"\s*:\s*(\d{4})'):
+    for pat in (r'"builtYear"\s*:\s*(\d{4})',):
         ym = re.search(pat, html)
         if ym and YEAR_VALUE_RE.search(ym.group(1)) and not fields.get("build_year"):
             _set_field(fields, "build_year", ym.group(1))
             break
 
-    # floors — ищем рядом с wallMaterial
     if m:
         ctx_start = max(0, m.start() - 200)
         ctx_end = min(len(html), m.end() + 200)
@@ -428,10 +477,13 @@ def _fetch_building_page(session: curl_requests.Session, subdomain: str, slug: s
         if cookie:
             headers["Cookie"] = cookie
         res = session.get(url, headers=headers, timeout=12, impersonate="chrome110")
+        global _qrator_blocked
         if res.status_code != 200:
+            _qrator_blocked = True
             return None
         if "__qrator" in res.text:
             logging.warning("Domclick: заблокирован Qrator, куки устарели или отсутствуют")
+            _qrator_blocked = True
             return None
         return res.text
     except Exception:
@@ -485,44 +537,35 @@ def _combined_cookie() -> Optional[str]:
 
 
 def _get_building_via_guid(geo_guid: str) -> tuple[dict[str, str], Optional[str]]:
-    """GUID card URL (http://) → public redirect Location → fetch building page with cookies."""
+    """GUID card URL → follow full redirect chain → fetch building page with cookies."""
     try:
         session = curl_requests.Session()
-        # Шаг 1: получаем Location без следования редиректу (http:// работает без авторизации)
-        res1 = session.get(
-            f"http://domclick.ru/card/info__building__{geo_guid}",
-            headers=_SUGGEST_HEADERS,
-            timeout=8,
-            impersonate="chrome110",
-            allow_redirects=False,
-        )
-        location = res1.headers.get("Location") or res1.headers.get("location") or ""
-        if not location:
-            # Если сервер вернул 200 с JS-редиректом — пробуем из тела
-            m_body = re.search(r'https?://([^"\']+\.domclick\.ru/building/[^"\'#?]+)', res1.text)
-            location = m_body.group(0) if m_body else ""
-        if not location:
-            logging.debug("Domclick GUID: no Location (status=%s)", res1.status_code)
-            return {}, None
-        # Нормализуем URL
-        if location.startswith("/"):
-            location = f"https://domclick.ru{location}"
-        m = re.match(r"https?://([^.]+)\.domclick\.ru/building/([^#?/]+(?:/[^#?/]+)*)", location)
-        if not m:
-            logging.debug("Domclick GUID: Location not a building URL: %s", location)
-            return {}, None
-        subdomain, slug = m.group(1), m.group(2)
-        building_url = f"https://{subdomain}.domclick.ru/building/{slug}"
-        # Шаг 2: запрашиваем страницу здания с куками
-        headers2 = dict(_DOMCLICK_HEADERS)
-        cookie = _combined_cookie()
+        # Используем только браузерные куки (qrator_jsid2 привязан к IP пользователя)
+        cookie = _load_cookie() or _combined_cookie()
+        headers = dict(_DOMCLICK_HEADERS)
         if cookie:
-            headers2["Cookie"] = cookie
-        res2 = session.get(building_url, headers=headers2, timeout=12, impersonate="chrome110")
-        if res2.status_code != 200 or "__qrator" in res2.text:
-            logging.debug("Domclick GUID: page blocked (status=%s)", res2.status_code)
+            headers["Cookie"] = cookie
+
+        # HTTPS напрямую — пропускаем HTTP→HTTPS редирект, чтобы Qrator увидел куки сразу
+        res = session.get(
+            f"https://domclick.ru/card/info__building__{geo_guid}",
+            headers=headers,
+            timeout=12,
+            impersonate="chrome120",
+            allow_redirects=True,
+        )
+        final_url = res.url or ""
+        m = re.match(r"https?://([^.]+)\.domclick\.ru/building/([^#?/]+(?:/[^#?/]+)*)", final_url)
+        if not m:
+            logging.debug("Domclick GUID: final URL not a building page: %s", final_url)
+            return {}, None
+        building_url = f"https://{m.group(1)}.domclick.ru/building/{m.group(2)}"
+        if res.status_code != 200 or "__qrator" in res.text:
+            global _qrator_blocked
+            _qrator_blocked = True
+            logging.debug("Domclick GUID: page blocked (status=%s), url=%s", res.status_code, building_url)
             return {}, building_url
-        parsed = _extract_fields_from_html(res2.text)
+        parsed = _extract_fields_from_html(res.text)
         return parsed, building_url
     except Exception as exc:
         logging.debug("Domclick GUID: %s", exc)
@@ -614,6 +657,9 @@ def get_building_from_domclick(
     street_type: Optional[str] = None,
 ) -> tuple[dict[str, str], Optional[str]]:
     """Suggest → slug candidates → HTML-страница → поля. Возвращает (поля, url)."""
+    global _qrator_blocked
+    _qrator_blocked = False  # сбрасываем перед каждым запросом
+
     house_num, block_num = normalize_house_and_block(house, block)
     if not street or not house_num:
         return {}, None
@@ -631,31 +677,53 @@ def get_building_from_domclick(
     place = (city or settlement or "").strip()
     house_str = f"{house_num}/{block_num}" if block_num else house_num
     short_query = f"{place}, {street}, {house_str}"
+    global _last_canonical
     geo_guid, canonical, suggest_url = _suggest_building(dadata_addr or short_query)
     if not geo_guid and dadata_addr:
         geo_guid, canonical, suggest_url = _suggest_building(short_query)
+    _last_canonical = canonical
 
     # GUID card redirect → полные данные со страницы здания (Qrator cookies)
     if geo_guid:
         guid_fields, guid_url = _get_building_via_guid(geo_guid)
+        if guid_url and not best_url:
+            best_url = guid_url
+        elif not best_url:
+            # Redirect заблокирован Qrator, но card-ссылка работает в браузере
+            best_url = f"https://domclick.ru/card/info__building__{geo_guid}"
         if guid_fields:
             merged = _merge_fields(merged, guid_fields)
+            _qrator_blocked = False
             return merged, guid_url or best_url
-
-    # Fallback: user_realty API (CAS-куки, без Qrator, но только частичные поля)
-    if geo_guid:
-        ur_fields = _get_building_from_user_realty(geo_guid)
-        if ur_fields:
-            merged = _merge_fields(merged, ur_fields)
-            if merged:
-                return merged, best_url
 
     # Fallback: известный slug из KNOWN_BUILDINGS
     if not geo_guid and not known:
         logging.debug("Domclick: здание не найдено через suggest, пропускаем HTML")
         return merged, best_url
 
-    for slug in _slug_candidates(city, settlement, street, house_num, block_num, city_district, cad_key):
+    street_slug = _street_slug(street or "")
+    district_slug = _district_slug(city_district)
+    hs_plain = _house_slug_part(house_num, block_num)
+    hs_k = _house_slug_part(house_num, block_num, k_prefix=True)
+
+    # Экстра-кандидаты из canonical-адреса suggest (микрорайон)
+    extra_slugs: list[str] = []
+    if canonical:
+        for hs in dict.fromkeys([hs_plain, hs_k]):
+            extra_slugs.extend(_extra_slugs_from_canonical(canonical, district_slug, street_slug, hs))
+
+    # Slug и субдомен из GUID-редиректа (точный URL от Domclick)
+    if best_url:
+        m_guid = re.search(r"https?://([^.]+)\.domclick\.ru/building/(.+)", best_url)
+        if m_guid:
+            subdomain = m_guid.group(1)  # точный субдомен из Domclick
+            guid_slug = m_guid.group(2).rstrip("/")
+            extra_slugs.insert(0, guid_slug)
+
+    base_slugs = _slug_candidates(city, settlement, street, house_num, block_num, city_district, cad_key)
+    all_slugs = list(dict.fromkeys(extra_slugs + base_slugs))
+
+    for slug in all_slugs:
         html = _fetch_building_page(curl_requests.Session(), subdomain, slug)
         if not html:
             continue
@@ -663,10 +731,19 @@ def get_building_from_domclick(
         if parsed:
             merged = _merge_fields(merged, parsed)
             best_url = f"https://{subdomain}.domclick.ru/building/{slug}"
+            break  # первый успешный slug достаточен
 
     if merged:
+        _qrator_blocked = False
         return merged, best_url
-    return {}, None
+
+    # Last resort: user_realty API (CAS-куки, без Qrator, но только частичные поля)
+    if geo_guid:
+        ur_fields = _get_building_from_user_realty(geo_guid)
+        if ur_fields:
+            merged = _merge_fields(merged, ur_fields)
+
+    return merged or {}, best_url
 
 
 def _make_bbox(lat: float, lon: float, delta: float = 0.0002) -> tuple[str, str]:
@@ -716,17 +793,25 @@ def get_building_from_domclick_api(
         ("sw", sw),
         ("zoom", "18"),
     ]
+    mobile_auth = _load_mobile_auth()
     headers = {
         "Host": "bff-search-mobile.domclick.ru",
         "X-Service": "mobile/domclick_ios/9.30.0",
         "Accept": "*/*",
         "Accept-Language": "ru",
         "User-Agent": (
-            "iOS; 26.3; Apple; unrecognized; 9.30.0; 3; "
+            "iOS; 26.5.2; Apple; unrecognized; 9.30.0; 3; "
             "7F06BEFC-9EC3-45A3-B554-D2FE00C9958A; CUSTOMER"
         ),
         "x-user-role": "CUSTOMER",
+        "X-Requested-With": "XMLHttpRequest",
     }
+    if mobile_auth.get("hash"):
+        headers["Hash"] = mobile_auth["hash"]
+    if mobile_auth.get("timestamp"):
+        headers["Timestamp"] = mobile_auth["timestamp"]
+    if mobile_auth.get("cookie"):
+        headers["Cookie"] = mobile_auth["cookie"]
 
     try:
         session = curl_requests.Session()

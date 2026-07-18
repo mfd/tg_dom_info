@@ -15,25 +15,9 @@ def _env(name: str) -> Optional[str]:
 BOT_TOKEN = _env("BOT_TOKEN")
 DADATA_API = _env("DADATA_API")
 DADATA_SECRET = _env("DADATA_SECRET")
-TWOGIS_API = _env("TWOGIS_API")
 ADMIN_ID = _env("ADMIN_ID")
 
 def require_bot_token() -> str:
     if not BOT_TOKEN:
         raise ValueError("Переменная BOT_TOKEN не задана в .env")
     return BOT_TOKEN
-
-
-def require_dadata_api() -> str:
-    if not DADATA_API:
-        raise ValueError("Переменная DADATA_API не задана в .env")
-    return DADATA_API
-
-
-def require_dadata_secret() -> Optional[str]:
-    return DADATA_SECRET
-
-def require_twogis_api() -> str: 
-    if not TWOGIS_API:
-        raise ValueError("Переменная TWOGIS_API не задана")
-    return TWOGIS_API

@@ -1,14 +1,16 @@
 import sys
 import warnings
 
-from building_format import format_building_fields
-from parser_utils import get_building_info, get_dadata_address
-from settings import require_dadata_api
+from utils.format import format_building_fields
+from parsers.aggregator import get_building_info
+from parsers.dadata import get_dadata_address
+from settings import DADATA_API
 
 warnings.filterwarnings("ignore")
 
 if __name__ == "__main__":
-    require_dadata_api()
+    if not DADATA_API:
+        raise ValueError("Переменная DADATA_API не задана в .env")
     query = " ".join(sys.argv[1:]) if len(sys.argv) > 1 else "Уфа Злобина 38/2"
 
     addr, details = get_dadata_address(query)
