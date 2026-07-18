@@ -28,20 +28,27 @@ async def main():
 
         print("navigator.webdriver:", await page.evaluate("navigator.webdriver"))
 
-        # Перехватываем все запросы от challenge JS
-        qrator_requests = []
-        page.on("request", lambda r: qrator_requests.append(r.url) if "qrator" in r.url else None)
+        # Перехватываем запросы и ответы Qrator challenge
+        async def on_response(response):
+            if "qrator" in response.url:
+                print(f"\n[RESPONSE] {response.url[:100]}")
+                print(f"  status: {response.status}")
+                print(f"  headers: {dict(response.headers)}")
+                try:
+                    body = await response.text()
+                    print(f"  body: {body[:200]}")
+                except Exception:
+                    pass
+
+        page.on("response", on_response)
 
         print("Открываем domclick.ru...")
         try:
             await page.goto("https://domclick.ru", timeout=30000)
         except Exception:
-            pass  # редирект после challenge может вызвать таймаут
+            pass
 
-        # Ждём дольше — challenge JS делает доп. запрос и редирект
         await asyncio.sleep(10)
-
-        print(f"\nQrator запросы от JS: {qrator_requests}")
 
         cookies = await context.cookies()
         print(f"\nПолучено кук: {len(cookies)}")
