@@ -36,33 +36,38 @@ def get_building_info(
         area=area, area_type=area_type,
         settlement_type=settlement_type, street_type=street_type,
     )
-    if dc_fields:
-        return dc_fields, None, domclick_url
-
     # 2. Domclick mobile API по координатам — fallback когда HTML заблокирован Qrator
-    if lat and lon:
+    if not dc_fields and lat and lon:
         dc_fields, mobile_url = get_building_from_domclick_api(lat, lon, house=house, block=block)
         if dc_fields:
-            return dc_fields, None, mobile_url or domclick_url
+            domclick_url = mobile_url or domclick_url
+
+    # Если Domclick вернул полные данные (есть год постройки) — возвращаем сразу
+    if dc_fields and dc_fields.get("build_year"):
+        return dc_fields, None, domclick_url
 
     # 3. МинЖКХ
-    info: dict = {}
     year, material, mingkh_url = get_year_from_mingkh_smart(
         cadastral_number, city, street, house, block, settlement
     )
+    mingkh_fields: dict = {}
     if year:
-        info["build_year"] = year
+        mingkh_fields["build_year"] = year
     if material:
-        info["wall_material"] = material
-    if info:
-        return info, mingkh_url, domclick_url
+        mingkh_fields["wall_material"] = material
 
     # 4. Реформа ЖКХ (reformagkh.ru)
     rgkh_fields, rgkh_url = get_building_from_reformagkh(city, street, house, block, settlement)
-    if rgkh_fields:
-        return rgkh_fields, rgkh_url, domclick_url
 
-    return info, mingkh_url, domclick_url
+    # Мержим: Domclick + МинЖКХ + Реформа (приоритет в таком порядке)
+    merged = {}
+    for source in (rgkh_fields, mingkh_fields, dc_fields):
+        for k, v in (source or {}).items():
+            if v and k not in merged:
+                merged[k] = v
+
+    best_mingkh_url = mingkh_url or rgkh_url
+    return merged, best_mingkh_url, domclick_url
 
 
 def get_building_year(
