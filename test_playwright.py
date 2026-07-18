@@ -1,19 +1,21 @@
 """
-Тест: получение Qrator-кук через Playwright.
-Запуск: python test_playwright.py
+Тест: получение Qrator-кук через patchright (патченый Playwright без маркеров автоматизации).
+Запуск:
+    pip install patchright
+    patchright install chromium
+    python test_playwright.py
 
 Успех = в выводе есть qrator_jsid2.
-Тогда можно интегрировать автообновление в бот.
 """
 import asyncio
-from playwright.async_api import async_playwright
+from patchright.async_api import async_playwright
 
 
 async def main():
     async with async_playwright() as p:
         browser = await p.chromium.launch(
             headless=True,
-            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"],
+            args=["--no-sandbox", "--disable-dev-shm-usage"],
         )
         context = await browser.new_context(
             user_agent=(
@@ -22,11 +24,9 @@ async def main():
                 "Chrome/120.0.0.0 Safari/537.36"
             )
         )
-        await context.add_init_script(
-            "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
-        )
         page = await context.new_page()
 
+        print("navigator.webdriver:", await page.evaluate("navigator.webdriver"))
         print("Открываем domclick.ru...")
         await page.goto("https://domclick.ru", timeout=30000)
         await page.wait_for_load_state("networkidle", timeout=20000)
@@ -40,13 +40,11 @@ async def main():
         qrator_jsid2 = next((c for c in cookies if c["name"] == "qrator_jsid2"), None)
         print()
         if qrator_jsid2:
-            print("✅ qrator_jsid2 получен — Playwright работает, можно интегрировать в бот")
-            # Собираем cookie-строку для /setcookie
+            print("✅ qrator_jsid2 получен — patchright работает, можно интегрировать в бот")
             cookie_str = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
-            print(f"\nCookie string для /setcookie:\n{cookie_str[:200]}...")
+            print(f"\nCookie string:\n{cookie_str}")
         else:
-            print("❌ qrator_jsid2 не получен — Qrator всё ещё детектирует браузер")
-            print("   Попробуй: headless=False + Xvfb на VPS")
+            print("❌ qrator_jsid2 не получен")
 
         await browser.close()
 
