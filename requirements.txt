@@ -4,4 +4,3 @@ requests
 curl_cffi
 beautifulsoup4
 urllib3
-patchright
